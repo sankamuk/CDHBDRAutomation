@@ -1,0 +1,207 @@
+#!/bin/bash 
+###############################################################################################################
+# Usage  : This script will trigger BDR HDFS Replication Job send email of status
+# Execution: backupjob [Schedule Id] [Service Name]
+# Date   :  March 21st 2017
+# Version: 1.0
+###############################################################################################################
+echo "========================================================================================================"
+echo " NEW EXECUTION. DATE $(date)."
+echo "========================================================================================================"
+script_dir=$(cd $(dirname $0);pwd)
+serviceNm=hdfs
+
+# Setting up configuration variable
+if [ -f ${script_dir}/backupjob.config ] ; then
+        debugMd=$(grep ^hadoop.bdr.hdfs.log ${script_dir}/backupjob.config | awk -F"=" '{ print $2 }')
+	drCmHost=$(grep ^hadoop.bdr.hdfs.rep.cm ${script_dir}/backupjob.config | awk -F"=" '{ print $2 }')
+	scheduleId=$(grep ^hadoop.bdr.hdfs.rep.confId ${script_dir}/backupjob.config | awk -F"=" '{ print $2 }')
+        repUser=$(grep ^hadoop.bdr.hdfs.rep.usr ${script_dir}/backupjob.config | awk -F"=" '{ print $2 }')
+        idpasswden=$(grep ^hadoop.bdr.hdfs.rep.passwd ${script_dir}/backupjob.config | cut -d"=" -f2-)
+        admPncpl=$(grep ^hadoop.bdr.hdfs.rep.principle ${script_dir}/backupjob.config | awk -F"=" '{ print $2 }')
+        sleepTime=$(grep ^hadoop.bdr.hdfs.rep.chckprd ${script_dir}/backupjob.config | awk -F"=" '{ print $2 }')
+        sleepCountr=$(grep ^hadoop.bdr.hdfs.rep.chckcnt ${script_dir}/backupjob.config | awk -F"=" '{ print $2 }')
+        prgntfy=$(grep ^hadoop.bdr.hdfs.rep.progsnotfy ${script_dir}/backupjob.config | awk -F"=" '{ print $2 }')
+        email_list=$(grep ^hadoop.bdr.hdfs.rep.email ${script_dir}/backupjob.config | awk -F"=" '{ print $2 }')
+fi
+[ -z "${debugMd}" ] && debugMd=info
+[ -z "${drCmHost}" ] && drCmHost=localhost
+[ -z "${scheduleId}" ] && scheduleId=42
+[ -z "${repUser}" ] && repUser=admin
+[ -z "${idpasswden}" ] && idpasswden=
+[ -z "${admPncpl}" ] && admPncpl=admin
+[ -z "${sleepTime}" ] && sleepTime=15
+[ -z "${sleepCountr}" ] && sleepCountr=3
+[ -z "${prgntfy}" ] && prgntfy=5
+[ -z "${email_list}" ] && email_list=sanmuk21@gmail.com
+
+# Setting logging mode
+if [ "${debugMd}" == "debug" ] ; then
+        echo "INFO [$(date)] : Setting debug mode."
+        set -x
+fi
+
+# Setting up environment variable
+dmnName=$(hostname -d | tr [a-z] [A-Z])
+hstNm=$(hostname)
+passwd=$(echo ${idpasswden} | openssl enc -aes-256-cbc -a -d -salt -pass pass:Sankar)
+runStatFile=${script_dir}/tmp/backupjob.init.tmp.$$
+runFile=${script_dir}/tmp/backupjob.runhdfs.tmp.$$
+statusFile=${script_dir}/tmp/backupjob.stathdfs.tmp.$$
+mailByFile=${script_dir}/tmp/backupjob.mailhdfs.tmp.$$
+KERB_FILE="${script_dir}/tmp/krb5cc_hdfs_keytab_"$$
+KRB5CCNAME="FILE:${KERB_FILE}"
+
+# Setting Execution
+echo "[`date`] INFO: Starting HDFS replication backup."
+echo "INFO: Previous HDFS Replication Job Initialization alert. Host $(hostname) at $(date)." | /bin/mailx -s "INFO - Hadoop HDFS Replication Job - Initialize" -r HadoopAdmin "${email_list}"
+echo "[`date`] INFO: Configuration ID: ${scheduleId}."
+
+# Loop to check any currently active job
+echo "[`date`] INFO: Checking currently running job status;"
+n=0
+while :
+do
+        curl -s -X GET -u "${repUser}:${passwd}" -k "https://${drCmHost}:7183/api/v10/clusters/CDH-AMER-DR-Shared1/services/${serviceNm}/replications" >> ${runStatFile} 2>> ${runStatFile}
+        [ $? -eq 0 ] && break || ((n++))
+        if [ $n -ge 3 ] ; then
+                echo "[`date`] ERROR: Error in extracting the backup job status initially to check any currently running job."
+		echo "ALERT: Previous HDFS Replication Job failed cause of issue in extracting previous job status. Host $(hostname) at $(date)." | /bin/mailx -s "ALERT - Hadoop HDFS Replication Job - Failure" -r HadoopAdmin "${email_list}"
+                rm -f ${script_dir}/tmp/*.tmp.*
+                exit 1
+        fi
+done
+grep "\"active\"" ${runStatFile} | grep "true"
+if [ $? -eq 0 ] ; then
+	echo "[`date`] ERROR: Current job running thus will not execute new one."
+	echo "ALERT: Previous HDFS Replication Job is still running and probably in hung state. Host $(hostname) at $(date)." | /bin/mailx -s "ALERT - Hadoop HDFS Replication Job - HUNG" -r HadoopAdmin "${email_list}"
+	cat ${runStatFile}
+	rm -f ${script_dir}/tmp/*.tmp.*
+	exit 1
+fi
+
+# Loop to trigger successful replication
+echo "[`date`] INFO: Initiating new replication."
+n=0
+while :
+do
+	curl -s -X POST -u "${repUser}:${passwd}" -k "https://${drCmHost}:7183/api/v10/clusters/CDH-AMER-DR-Shared1/services/${serviceNm}/replications/${scheduleId}/run" >> ${runFile} 2>> ${runFile}
+	[ $? -eq 0 ] && break || ((n++))
+	if [ $n -ge 3 ] ; then
+		echo "[`date`] ERROR: Error in starting bacup job."
+		echo "ALERT: HDFS Replication Job failed to trigger backup new job instance. Host $(hostname) at $(date)." | /bin/mailx -s "ALERT - Hadoop HDFS Replication Job - Failure" -r HadoopAdmin "${email_list}"
+                rm -f ${script_dir}/tmp/*.tmp.*
+		exit 1
+	fi
+done
+
+jobIdN=$(grep "\"id\" :" ${runFile} | awk -F: '{ print $2 }' | awk -F"," '{ print $1 }' | tr -d " ")
+echo "[`date`] INFO: Job Id: ${jobIdN}."
+
+if [ -z "${jobIdN}" ] ; then
+        echo "[`date`] Error in starting backup job. Job ID cannot be extracted."
+	echo "ALERT: HDFS Replication Job was triggered but not able to extract status. Host $(hostname) at $(date)." | /bin/mailx -s "ALERT - Hadoop HDFS Replication Job - Failure" -r HadoopAdmin "${email_list}"
+	rm -f ${script_dir}/tmp/*.tmp.*
+        exit 1
+fi
+
+# Waiting for completion of job to check status
+cntr=0
+progss=0
+while [ ${cntr} -lt ${sleepCountr} -a ${progss} -lt 100 ] 
+do
+	((cntr++))
+	echo "[`date`] INFO: Current progress ${progss}, cycle $cntr Sleep starting, will sleep for ${sleepTime} mins before status check."
+	sleep ${sleepTime}m
+	echo "[`date`] INFO: Completed waiting will validate the status."
+	# Loop to extract status of the replication job
+	n=0
+	while :
+	do
+		curl -s -X GET -u "${repUser}:${passwd}" -k "https://${drCmHost}:7183/api/v10/clusters/CDH-AMER-DR-Shared1/services/${serviceNm}/replications/${scheduleId}/history" | grep -A 40 "id\" : ${jobIdN}" >> ${statusFile} 2>> ${statusFile}
+		[[ $? = 0 ]] && break || ((n++))
+		if [ $n -ge 3 ] ; then
+                	echo "[`date`] ERROR: Error in extracting the backup job status."
+			echo "ALERT: HDFS Replication Job was triggered but not able to extract status. Host $(hostname) at $(date)." | /bin/mailx -s "ALERT - Hadoop HDFS Replication Job - Failure" -r HadoopAdmin "${email_list}"
+			rm -f ${script_dir}/tmp/*.tmp.*
+                	exit 1
+	        fi
+	done
+	progss=$(grep "progress" ${statusFile} | awk -F: '{ print $2 }' | awk -F"," '{ print $1 }')
+	if [ $((cntr%prgntfy)) -eq 0 ] ; then
+		echo "NOTIFY: HDFS Replication Job was triggered but still running current progress ${progss} %." | /bin/mailx -s "NOTIFY - Hadoop HDFS Replication Job - Ongoing" -r HadoopAdmin "${email_list}"
+	fi
+done
+
+# Detected Job not completion status
+if [ ${progss} -ne 100 ] ; then
+	echo "[`date`] ERROR: Job doesnot seems to have finished in expected time. Thus will terminate execution."
+	echo "ALERT: HDFS Replication Job was triggered but did not completed within expected time. Host $(hostname) at $(date)." | /bin/mailx -s "ALERT - Hadoop HDFS Replication Job - Failure" -r HadoopAdmin "${email_list}"
+	rm -f ${script_dir}/tmp/*.tmp.*
+	exit 1
+fi
+
+# HDFS Replication Job Completion status validation
+flcopyF=$(grep "numFilesCopyFailed" ${statusFile} | awk -F: '{ print $2 }' | awk -F"," '{ print $1 }')
+btcopyF=$(grep "numBytesCopyFailed" ${statusFile} | awk -F: '{ print $2 }' | awk -F"," '{ print $1 }')
+jobId=$(grep "jobId" ${statusFile} | awk -F: '{ print $2 }' | awk -F"," '{ print $1 }')
+applId=$(echo $jobId | sed 's/job/application/')
+rm -f "${runFile}" "${statusFile}"
+echo "[`date`] INFO: Host= ${hstNm}, BDRjobId= ${jobIdN}, Yarn Job= ${jobId}, Failed File Copy= ${flcopyF}, Failed Byte Copy= ${btcopyF}."
+
+if [ ${flcopyF} -ne 0 -o ${btcopyF} -ne 0 ] ; then
+	# HDFS Replication Job Error Handling
+	echo "[`date`] ERROR: Backup failed. Host: ${hstNm}. JobId: ${jobIdN}. Yarn Job: ${jobId}."
+	echo "[`date`] INFO: Starting to check the reason of failure."
+	kinit -c ${KERB_FILE} -l 5d -k -t ${script_dir}/${admPncpl}.keytab ${admPncpl}@${dmnName}
+	export KRB5CCNAME
+	echo "====================================================================================="
+	echo "* Application State:"
+	yarn application -status ${applId}
+	echo "====================================================================================="
+	yarn logs -applicationId ${applId} > ${statusFile}
+	rm -f ${KERB_FILE}
+	echo "[`date`] INFO: Searching for FileNotFoundException in log in which case the error can be neglected."
+	grep -q "FileNotFoundException" ${statusFile}
+	if [ $? -eq 0 ] ; then
+		echo "[`date`] INFO: Found FileNotFoundException thus avoiding the error and will report success status."
+		echo "[`date`] Starting to send mail for reporting the status."
+		echo "<html><body><h1><center>Backup Job Failure Report</center></h1><br><br>" >> $mailByFile
+                echo "<table style="width:80%"  border="1" align="center"><tr><td style="width:40%" bgcolor="AFBCBE">Date</td><td>$(date)</td></tr><tr><td style="width:40%" bgcolor="AFBCBE">BDR Id</td><td>${jobIdN}</td></tr><tr><td style="width:40%" bgcolor="AFBCBE">Yarn Job</td><td>${jobId}</td></tr></table><br><br>" >> $mailByFile
+		echo "<table style="width:80%"  border="1" align="center"><tr bgcolor="BBF1FA"><th>Failure File List</th></tr>" >> $mailByFile
+		grep FileNotFoundException ${statusFile} | while read errLine
+		do
+			srcFl=$(echo $errLine | awk -F"hdfs" '{ print $2 }' | awk '{ print $1 }')
+                        echo "<tr><td>HDFS${srcFl}</td></tr>" >> $mailByFile
+                        echo "[`date`] Added column for error line $errLine."
+                done
+                echo "</table></body></html>" >> $mailByFile
+                (
+                  echo To: ${email_list}
+                  echo From: HadoopAdmin
+                  echo "Content-Type: text/html; "
+                  echo "Subject: INFO - Hadoop HDFS Replication Job - FileNotFound Error Report - $(hostname)"
+                  echo ""
+                  cat $mailByFile
+                ) | /usr/sbin/sendmail -t
+		rm -f ${script_dir}/tmp/*.tmp.*
+                echo "[`date`] INFO: Backup Successfull but with few temporary file copy issue. Host: ${hstNm}. JobId: ${jobIdN}. Yarn Job: ${jobId}."
+                exit 0
+        else
+                echo "[`date`] INFO: Found no error for FileNotFoundException, thus reporting the failure."
+                echo "[`date`] Starting to send mail for reporting the status."
+                echo "Backup Job Failure Report" >> $mailByFile
+                echo "=========================" >> $mailByFile
+                echo "" >> $mailByFile
+                echo "Date $(date) Backup Job ${jobIdN} Yarn Job ${jobId}" >> $mailByFile
+                echo "Issue detail attached." >> $mailByFile
+                cat $mailByFile | mailx -s "ALERT - Hadoop HDFS Replication Job - Unknown Error Report - $(hostname)" -r HadoopAdmin -a ${statusFile} ${email_list}
+		rm -f ${script_dir}/tmp/*.tmp.*
+                echo "[`date`] INFO: Error not FileNotFoundException thus reporting failure."
+                exit 1
+        fi
+else
+        echo "[`date`] INFO: Backup Successfull. Host: ${hstNm}. JobId: ${jobIdN}. Yarn Job: ${jobId}."
+	rm -f ${script_dir}/tmp/*.tmp.*
+        exit 0
+fi

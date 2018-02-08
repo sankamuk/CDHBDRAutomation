@@ -1,0 +1,45 @@
+#!/bin/bash
+###############################################################################################################
+# Usage    : This script will clear old BDR logs. Retention preriod is 7 days.
+# Execution: clearoldlog
+# Date     : 09 December, 2016
+# Version  : 1.0
+###############################################################################################################
+script_dir=$(cd $(dirname $0);pwd)
+if [ -f ${script_dir}/backupjob.config ] ; then
+	retainPeriod=$(grep ^hadoop.bdr.hdfs.bcklgretain ${script_dir}/backupjob.config | awk -F"=" '{ print $2 }')
+	bdrLogPath=$(grep ^hadoop.bdr.hdfs.bdrlogpath ${script_dir}/backupjob.config | awk -F"=" '{ print $2 }')
+	admPncpl=$(grep ^hadoop.bdr.hdfs.rep.principle ${script_dir}/backupjob.config | awk -F"=" '{ print $2 }')
+	HADOOP_HOME=$(grep ^hadoop.home.dir ${scpt_hm}/check_hadoop.prop | awk -F"=" '{ print $2 }')
+	JAVA_HOME=$(grep ^hadoop.java.dir ${scpt_hm}/check_hadoop.prop | awk -F"=" '{ print $2 }')
+fi
+[ -z "${retainPeriod}" ] && retainPeriod=7
+[ -z "${bdrLogPath}" ] && bdrLogPath=/system/BDR_logs
+[ -z "${admPncpl}" ] && admPncpl=admin
+[ -z "${HADOOP_HOME}" ] && HADOOP_HOME=/opt/cloudera/parcels/CDH/lib/hadoop
+[ -z "${JAVA_HOME}" ] && JAVA_HOME=/usr/java/jdk1.7.0_67-cloudera
+
+dmnName=$(hostname -d | tr [a-z] [A-Z])
+export HADOOP_HOME
+export JAVA_HOME
+KERB_FILE="${script_dir}/tmp/krb5cc_cleanup_keytab_"$$
+KRB5CCNAME="FILE:${KERB_FILE}"
+kinit -c ${KERB_FILE} -l 5d -k -t ${script_dir}/${admPncpl}.keytab ${admPncpl}@${dmnName}
+export KRB5CCNAME
+
+now=$(date +%s);
+echo "[`date`] Starting to clear log file older than ${retainPeriod} day(s) from path ${bdrLogPath}." 
+hdfs dfs -ls ${bdrLogPath} | grep -v ^Found | grep -v ^$ | while read logDir
+do
+	echo "[`date`] Starting to validate deletion of === ${logDir}."
+	fileDate=`echo ${logDir} | awk '{print $6}'`
+	fileName=`echo ${logDir} | awk '{print $8}'`
+	difference=$(( ($now - $(date -d "${fileDate}" +%s)) / (24 * 60 * 60) ));
+	if [ $difference -gt ${retainPeriod} ]
+	then
+		echo "[`date`] Deleting log directory ${fileName}."
+		hadoop fs -rm -r -skipTrash ${fileName}	
+	fi
+done
+rm -f ${KERB_FILE}
+echo "[`date`] Completed clearing old log directory."
