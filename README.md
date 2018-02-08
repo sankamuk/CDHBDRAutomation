@@ -6,7 +6,7 @@ Automation to build an operational DR using Cloudera Hadoop Distribution
 
 This is a tool to automate your CDH BDR setup. If you want to use CDH BDR(https://www.cloudera.com/documentation/enterprise/5-9-x/topics/cm_bdr_tutorials.html) to build your DR you would definately feel the tool though self sufficient but still it needs few fine include you in your complaint enterprise environment.
 
-Below are the features that is missing in BDR working alone:
+***Below are the features that is missing in BDR working alone:***
   1. Scheduling BDR jobs using your enterprise scheduling tool.
   2. Customised alerting for Job status.
   3. BDR Job probing and detect hung/failed condition.
@@ -15,7 +15,7 @@ Below are the features that is missing in BDR working alone:
 
 This is exactly where this tool comes into picture. Its build to make BDR your enterprise ready. 
 
-Below are the major features:
+***Below are the major features:***
   1. Schedule your BDR Replication job using your scheduler rather than CM itself.
   2. It doesnot consider FileNotFound error as a failer BDR execution though it reports the same via mail with exact files which failed to be replicated.
   3. Hung detection logic inbuild thus you get status of job in definite fashion.
