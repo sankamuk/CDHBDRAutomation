@@ -54,7 +54,7 @@ KRB5CCNAME="FILE:${KERB_FILE}"
 
 # Setting Execution
 echo "[`date`] INFO: Starting HDFS replication backup."
-echo "INFO: Previous HDFS Replication Job Initialization alert. Host $(hostname) at $(date)." | /bin/mailx -s "INFO - Hadoop HDFS Replication Job - Initialize" -r HadoopAdmin "${email_list}"
+echo "INFO: HDFS Replication Job Initialization notice. Host $(hostname) at $(date)." | /bin/mailx -s "INFO - Hadoop HDFS Replication Job - Initialize" -r HadoopAdmin "${email_list}"
 echo "[`date`] INFO: Configuration ID: ${scheduleId}."
 
 # Loop to check any currently active job
